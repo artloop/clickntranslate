@@ -126,7 +126,7 @@ from settings_window import (
     window_header_color,
     update_text,
 )
-from app_version import APP_VERSION
+from app_version import APP_VERSION, APP_VERSION_DISPLAY
 import platform_support
 import portable_paths
 from project_paths import resource_root
@@ -5124,7 +5124,7 @@ class WelcomeDialog(QDialog):
         title_stack.setSpacing(0)
         app_name = QLabel("Click'n'Translate")
         app_name.setStyleSheet("font-size: 17px; font-weight: 900; color: #ffffff;")
-        version = QLabel(f"v{APP_VERSION}")
+        version = QLabel(f"v{APP_VERSION_DISPLAY}")
         version.setObjectName("welcomeVersion")
         title_stack.addWidget(app_name)
         title_stack.addWidget(version)
@@ -10040,7 +10040,7 @@ class DarkThemeApp(QMainWindow):
         title = QLabel(help_action_text(lang, 'title'))
         title.setStyleSheet('font-size:18px; font-weight:600;')
         header.addWidget(title)
-        version = QLabel(f'V{APP_VERSION}')
+        version = QLabel(f'V{APP_VERSION_DISPLAY}')
         version.setObjectName('helpVersionLabel')
         version.setStyleSheet(f'font-size:12px; color:{colors["disabled"]};')
         header.addWidget(version)
@@ -10097,7 +10097,7 @@ class DarkThemeApp(QMainWindow):
     def _create_bug_report(self, parent=None):
         lang = self.current_interface_language
         try:
-            report_path = diagnostics.create_bug_report(app_version=APP_VERSION)
+            report_path = diagnostics.create_bug_report(app_version=APP_VERSION_DISPLAY)
         except Exception as error:
             logging.exception("Could not create the user diagnostic report")
             QMessageBox.warning(

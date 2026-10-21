@@ -46,7 +46,7 @@ from styled_dialogs import (
 )
 
 QMessageBox = StyledMessageBox
-from app_version import APP_VERSION
+from app_version import APP_VERSION, APP_VERSION_DISPLAY
 import platform_support
 import portable_paths
 from languages import (
@@ -220,7 +220,7 @@ def _update_feed_api_url():
 
 
 def _update_request_headers(url="", accept_json=False):
-    headers = {"User-Agent": f"ClicknTranslate/{APP_VERSION}"}
+    headers = {"User-Agent": f"ClicknTranslate/{APP_VERSION_DISPLAY}"}
     if accept_json:
         headers["Accept"] = "application/vnd.github+json"
 
@@ -9716,7 +9716,7 @@ class SettingsWindow(QWidget):
             QMessageBox.information(
                 self,
                 settings_text(lang, "update"),
-                update_text(lang, "up_to_date", version=APP_VERSION),
+                update_text(lang, "up_to_date", version=APP_VERSION_DISPLAY),
             )
             return
 
@@ -9742,7 +9742,7 @@ class SettingsWindow(QWidget):
             # manager), which is what Linux desktop apps do.
             msg = QMessageBox(self)
             msg.setWindowTitle(update_text(lang, "available_title"))
-            msg.setText(update_text(lang, "available_prompt", latest=latest_version, current=APP_VERSION))
+            msg.setText(update_text(lang, "available_prompt", latest=latest_version, current=APP_VERSION_DISPLAY))
             msg.setIcon(QMessageBox.Information)
             msg.setWindowIcon(QIcon(resource_path("icons/icon.ico")))
             open_btn = msg.addButton(settings_text(lang, "open"), QMessageBox.YesRole)
@@ -9769,7 +9769,7 @@ class SettingsWindow(QWidget):
             confirm.setWindowTitle(update_text(lang, "available_title"))
             confirm.setIcon(QMessageBox.Question)
             confirm.setWindowIcon(QIcon(resource_path("icons/icon.ico")))
-            confirm.setText(update_text(lang, "available_prompt", latest=latest_version, current=APP_VERSION))
+            confirm.setText(update_text(lang, "available_prompt", latest=latest_version, current=APP_VERSION_DISPLAY))
             yes_btn = confirm.addButton(settings_text(lang, "install"), QMessageBox.YesRole)
             confirm.addButton(settings_text(lang, "later"), QMessageBox.NoRole)
             confirm.exec_()
