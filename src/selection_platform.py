@@ -44,8 +44,8 @@ def read_primary_selection(app=None, *, use_qt=True):
     return ""
 
 
-def read_selected_text(*, allow_copy_fallback=False, primary_text=None, validate_target=None):
-    """Best-effort selected text in the foreground application."""
+def read_selected_text(*, primary_text=None):
+    """Selected text in the foreground application, without synthesizing keys."""
     if platform_support.IS_LINUX:
         if primary_text is not None:
             return primary_text.strip() or read_primary_selection(use_qt=False)
@@ -57,58 +57,8 @@ def read_selected_text(*, allow_copy_fallback=False, primary_text=None, validate
     if platform_support.IS_WINDOWS:
         from windows_selection import read_windows_selected_text
 
-        text = read_windows_selected_text()
-        if text or not allow_copy_fallback:
-            return text
-        return _read_selection_via_copy(validate_target=validate_target)
+        return read_windows_selected_text()
     return ""
-
-
-def _read_selection_via_copy(*, validate_target=None):
-    """Read via copy off the GUI thread, restoring even empty clipboard text."""
-    previous = None
-    changed = False
-    try:
-        import ctypes
-        import time
-
-        import pyperclip
-
-        previous = str(pyperclip.paste() or "")
-        if validate_target is not None and not validate_target():
-            return ""
-        if not platform_support.copy_text(""):
-            return ""
-        changed = True
-        if platform_support.IS_MAC:
-            from macos_desktop import send_edit_shortcut
-
-            if not send_edit_shortcut("c", validate_target=validate_target):
-                return ""
-        elif platform_support.IS_WINDOWS:
-            VK_CONTROL = 0x11
-            VK_C = 0x43
-            KEYEVENTF_KEYUP = 0x0002
-            if validate_target is not None and not validate_target():
-                return ""
-            try:
-                ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
-                ctypes.windll.user32.keybd_event(VK_C, 0, 0, 0)
-                time.sleep(0.02)
-            finally:
-                ctypes.windll.user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
-                ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-        time.sleep(0.2)
-        if validate_target is not None and not validate_target():
-            return ""
-        text = str(pyperclip.paste() or "").strip()
-        return text
-    except Exception:
-        logger.debug("Copy fallback selection read failed", exc_info=True)
-        return ""
-    finally:
-        if changed and previous is not None:
-            platform_support.copy_text(previous)
 
 
 def foreground_token():

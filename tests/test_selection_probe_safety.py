@@ -13,6 +13,7 @@ import mode_coordinator
 import platform_support
 import selection_platform
 import selection_quick_translate as quick
+import windows_selection
 
 
 def wait_probe(controller):
@@ -43,45 +44,56 @@ def controller():
             owner.deleteLater()
 
 
-@pytest.mark.parametrize('previous', ['', 'Clipboard before probing'])
-@pytest.mark.parametrize('failure', [None, 'copy', 'read'])
-def test_clipboard_restored_on_success_and_exception(previous, failure):
-    state = [previous]
-    reads = [0]
-    keys = []
-
-    def paste():
-        reads[0] += 1
-        if failure == 'read' and reads[0] > 1:
-            raise RuntimeError('Clipboard temporarily busy')
-        return state[0]
-
-    def copy(text):
-        state[0] = text
-        return True
-
-    def key(vk, scan, flags, extra):
-        keys.append((vk, flags))
-        if vk == 0x43 and flags == 0:
-            if failure == 'copy':
-                raise RuntimeError('Copy failed')
-            state[0] = 'Selected text'
-
+def test_windows_selection_read_does_not_synthesize_keys():
+    keys = mock.Mock()
     with (mock.patch.multiple(platform_support, IS_WINDOWS=True, IS_MAC=False, IS_LINUX=False),
-          mock.patch.object(ctypes, 'windll', SimpleNamespace(user32=SimpleNamespace(keybd_event=key)), create=True),
-          mock.patch.object(platform_support, 'copy_text', side_effect=copy),
-          mock.patch('pyperclip.paste', side_effect=paste), mock.patch('time.sleep')):
-        text = selection_platform._read_selection_via_copy()
-    assert text == ('Selected text' if failure is None else '')
-    assert state[0] == previous
-    assert keys[-2:] == [(0x43, 2), (0x11, 2)]
-
-
-def test_lost_foreground_aborts_before_changing_clipboard():
-    with (mock.patch('pyperclip.paste', return_value='Clipboard'),
-          mock.patch.object(platform_support, 'copy_text') as copy):
-        assert selection_platform._read_selection_via_copy(validate_target=lambda: False) == ''
+          mock.patch('windows_selection.read_windows_selected_text', return_value='Selected text'),
+          mock.patch.object(ctypes, 'windll', SimpleNamespace(user32=SimpleNamespace(keybd_event=keys)), create=True),
+          mock.patch.object(platform_support, 'copy_text') as copy,
+          mock.patch('pyperclip.paste', return_value='Clipboard before probing') as paste):
+        text = selection_platform.read_selected_text()
+    assert text == 'Selected text'
+    keys.assert_not_called()
     copy.assert_not_called()
+    paste.assert_not_called()
+
+
+class _PatternElement:
+    def __init__(self, text):
+        self.text = text
+
+    def GetCurrentPattern(self, pattern_id):
+        return self if self.text is not None else None
+
+    def GetSelection(self):
+        if not self.text:
+            return SimpleNamespace(Length=0, GetElement=lambda index: None)
+        range_item = SimpleNamespace(GetText=lambda _limit: self.text)
+        return SimpleNamespace(Length=1, GetElement=lambda index: range_item)
+
+
+def test_windows_selection_reads_ancestor_when_focus_has_no_text_pattern():
+    focused = _PatternElement(None)
+    document = _PatternElement('Highlighted sentence')
+    parents = {id(focused): document, id(document): None}
+
+    text = windows_selection._selection_along_ancestors(
+        focused, lambda element: parents[id(element)])
+
+    assert text == 'Highlighted sentence'
+
+
+def test_empty_windows_selection_leaves_clipboard_and_keys_alone():
+    keys = mock.Mock()
+    with (mock.patch.multiple(platform_support, IS_WINDOWS=True, IS_MAC=False, IS_LINUX=False),
+          mock.patch('windows_selection.read_windows_selected_text', return_value=''),
+          mock.patch.object(ctypes, 'windll', SimpleNamespace(user32=SimpleNamespace(keybd_event=keys)), create=True),
+          mock.patch.object(platform_support, 'copy_text') as copy,
+          mock.patch('pyperclip.paste') as paste):
+        assert selection_platform.read_selected_text() == ''
+    keys.assert_not_called()
+    copy.assert_not_called()
+    paste.assert_not_called()
 
 
 def test_selection_clear_hides_button_and_discards_pending_text(controller):

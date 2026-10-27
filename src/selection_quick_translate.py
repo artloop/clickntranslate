@@ -108,9 +108,7 @@ class _SelectionProbe(QtCore.QRunnable):
         validate = lambda: not self.cancelled.is_set() and (target is None or foreground_token() == target)
         try:
             if validate():
-                result['text'] = read_selected_text(
-                    allow_copy_fallback=not platform_support.IS_LINUX,
-                    primary_text=self.primary_text, validate_target=validate).strip()
+                result['text'] = read_selected_text(primary_text=self.primary_text).strip()
         except Exception:
             logger.debug('Selection probe failed', exc_info=True)
         self.signals.completed.emit(result)
@@ -334,8 +332,8 @@ class SelectionQuickTranslateController(QtCore.QObject):
         target = foreground_token()
         if self._pending_text and self._pending_target != target:
             self._dismiss_selection()
-        # Qt clipboard access stays on its owning thread. CLI fallbacks and
-        # Accessibility/UIA/Ctrl+C reads run in the bounded worker below.
+        # Qt clipboard access stays on its owning thread. PRIMARY reads and
+        # Accessibility/UI Automation reads run in the bounded worker below.
         primary_text = None
         if platform_support.IS_LINUX:
             clipboard = QtWidgets.QApplication.clipboard()
