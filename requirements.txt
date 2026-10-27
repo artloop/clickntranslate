@@ -12,6 +12,7 @@ winrt-Windows.System
 winrt-Windows.ApplicationModel
 Pillow
 pyperclip
+comtypes
 argostranslate~=1.11.0
 # Verified Windows CPython 3.12 wheel; 0.2.2 crashed during the local build checks.
 sentencepiece==0.2.1

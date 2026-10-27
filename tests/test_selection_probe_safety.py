@@ -168,6 +168,22 @@ def test_selection_report_keeps_pattern_errors_and_the_fragment():
     assert "reader: 'Translate text from games'" in report
 
 
+def test_automation_client_uses_clsid_when_progid_is_unregistered(monkeypatch):
+    monkeypatch.setattr(windows_selection, "_load_uia_module", lambda: None)
+
+    assert windows_selection._automation_clsid() == "{ff48dba4-60ef-4201-aa87-54103eef594e}"
+
+
+def test_automation_client_prefers_the_loaded_coclass_clsid(monkeypatch):
+    class _Library:
+        class CUIAutomation:
+            _reg_clsid_ = "{from-typelib}"
+
+    monkeypatch.setattr(windows_selection, "_load_uia_module", lambda: _Library)
+
+    assert windows_selection._automation_clsid() == "{from-typelib}"
+
+
 def test_windows_monitor_holds_ui_automation_listener(controller):
     controller._stop_monitor()
 

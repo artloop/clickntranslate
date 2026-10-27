@@ -29,7 +29,7 @@ _CONTROL_TYPES = {
     50033: "Pane",
     50036: "Table",
 }
-_AUTOMATION_PROGID = "UIAutomationClient.CUIAutomation"
+_CUIAutomation_CLSID = "{ff48dba4-60ef-4201-aa87-54103eef594e}"
 
 _uia_module = None
 _uia_module_checked = False
@@ -209,13 +209,24 @@ def _load_uia_module():
     return _uia_module
 
 
-def _automation_client():
-    import comtypes.client
+def _automation_clsid():
+    """CLSID of UIAutomationCore. Its ProgID is not registered on every machine."""
+    module = _load_uia_module()
+    coclass = getattr(module, "CUIAutomation", None) if module is not None else None
+    return getattr(coclass, "_reg_clsid_", None) or _CUIAutomation_CLSID
 
-    interface = _uia_interface("IUIAutomation")
-    if interface is None:
-        return comtypes.client.CreateObject(_AUTOMATION_PROGID)
-    return comtypes.client.CreateObject(_AUTOMATION_PROGID, interface=interface)
+
+def _automation_client():
+    import comtypes
+
+    clsid = _automation_clsid()
+    if not isinstance(clsid, comtypes.GUID):
+        clsid = comtypes.GUID(str(clsid))
+    return comtypes.CoCreateInstance(
+        clsid,
+        interface=_uia_interface("IUIAutomation"),
+        clsctx=comtypes.CLSCTX_INPROC_SERVER,
+    )
 
 
 def _wake_foreground_window(automation):

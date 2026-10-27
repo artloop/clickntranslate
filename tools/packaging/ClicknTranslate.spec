@@ -62,6 +62,7 @@ gui_hiddenimports = [
 # native neural OCR runtimes out of the Qt process.
 for package_name in (
     'pyperclip',
+    'comtypes',
     'PyQt5',
     'PIL',
     'requests',
