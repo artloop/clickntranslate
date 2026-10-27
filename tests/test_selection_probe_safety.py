@@ -148,6 +148,26 @@ def test_chrome_text_run_reads_selection_from_its_text_container():
         _TextRun(), lambda element: None) == 'Translate text from games'
 
 
+def test_selection_report_keeps_pattern_errors_and_the_fragment():
+    document = _DocumentSelection(
+        'Translate text from games',
+        'Translate text from games, images and any app — without retyping it.',
+    )
+
+    class _Broken:
+        Name = 'child'
+
+        def GetCurrentPattern(self, _pattern_id):
+            raise RuntimeError('pattern unavailable')
+
+    report = windows_selection.describe_selection_chain(
+        _Broken(), lambda element: document if element is not document else None)
+
+    assert 'RuntimeError: pattern unavailable' in report
+    assert "parsed: 'Translate text from games'" in report
+    assert "reader: 'Translate text from games'" in report
+
+
 def test_windows_monitor_holds_ui_automation_listener(controller):
     controller._stop_monitor()
 

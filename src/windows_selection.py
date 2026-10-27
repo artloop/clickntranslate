@@ -16,6 +16,19 @@ logger = logging.getLogger("clickntranslate.selection")
 _TEXT_PATTERN_ID = 10014  # UIA_TextPatternId
 _TEXT_CHILD_PATTERN_ID = 10029  # UIA_TextChildPatternId
 _MAX_ANCESTORS = 12
+_REPORT_TEXT_LIMIT = 180
+_CONTROL_TYPES = {
+    50004: "Edit",
+    50020: "Text",
+    50025: "Custom",
+    50026: "Group",
+    50028: "DataGrid",
+    50029: "DataItem",
+    50030: "Document",
+    50032: "Window",
+    50033: "Pane",
+    50036: "Table",
+}
 _AUTOMATION_PROGID = "UIAutomationClient.CUIAutomation"
 
 _uia_module = None
@@ -216,6 +229,197 @@ def _wake_foreground_window(automation):
         automation.ElementFromHandle(hwnd)
     except Exception:
         logger.debug("UI Automation foreground element request failed", exc_info=True)
+
+
+def _clip(value):
+    text = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    if len(text) <= _REPORT_TEXT_LIMIT:
+        return text
+    return text[:_REPORT_TEXT_LIMIT] + f"... ({len(text)} chars)"
+
+
+def _attempt(func):
+    try:
+        return True, func()
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _property(element, *names):
+    for name in names:
+        ok, value = _attempt(lambda name=name: getattr(element, name))
+        if not ok:
+            if value.startswith("AttributeError:"):
+                continue
+            return value
+        if value is None or value == "" or callable(value):
+            continue
+        return str(value)
+    return ""
+
+
+def _element_label(element):
+    name = _clip(_property(element, "CurrentName", "Name") or "(no name)")
+    control = _property(element, "CurrentControlType", "ControlType")
+    try:
+        control_id = int(control)
+    except (TypeError, ValueError):
+        control_name = control or "unknown"
+    else:
+        control_name = f"{_CONTROL_TYPES.get(control_id, 'Control')} ({control_id})"
+    framework = _property(element, "CurrentFrameworkId", "FrameworkId")
+    class_name = _property(element, "CurrentClassName", "ClassName")
+    details = [control_name]
+    if framework:
+        details.append(framework)
+    if class_name:
+        details.append(class_name)
+    return f"{name} | {', '.join(details)}"
+
+
+def _describe_pattern_call(element, pattern_id, interface_name, label):
+    ok, pattern = _attempt(lambda: element.GetCurrentPattern(pattern_id))
+    if not ok:
+        return [f"  {label}: {pattern}"]
+    if pattern is None:
+        return [f"  {label}: none"]
+    query = getattr(pattern, "QueryInterface", None)
+    interface = _uia_interface(interface_name) if callable(query) else None
+    if interface is not None:
+        cast_ok, cast_pattern = _attempt(lambda: query(interface))
+        if cast_ok:
+            pattern = cast_pattern
+        else:
+            return [f"  {label}: {cast_pattern}"]
+    return [f"  {label}: {type(pattern).__name__}", pattern]
+
+
+def _describe_element_selection(element):
+    lines = []
+    described = _describe_pattern_call(
+        element, _TEXT_PATTERN_ID, "IUIAutomationTextPattern", "text_pattern")
+    pattern = described[-1] if not isinstance(described[-1], str) else None
+    if pattern is None:
+        lines.extend(described)
+    else:
+        lines.append(described[0])
+        ok, selection = _attempt(pattern.GetSelection)
+        if not ok:
+            lines.append(f"  selection: {selection}")
+        else:
+            lines.append(f"  selection: {type(selection).__name__} {_clip(repr(selection))}")
+            for index, text_range in enumerate(_iter_ranges(selection)):
+                read_ok, text = _attempt(lambda text_range=text_range: _range_text(text_range))
+                if read_ok:
+                    lines.append(f"  range[{index}]: {_clip(text)!r}")
+                else:
+                    lines.append(f"  range[{index}]: {text}")
+            lines.append(f"  parsed: {_text_of_selection(selection)!r}")
+    child = _describe_pattern_call(
+        element, _TEXT_CHILD_PATTERN_ID, "IUIAutomationTextChildPattern", "text_child")
+    child_pattern = child[-1] if not isinstance(child[-1], str) else None
+    if child_pattern is None:
+        lines.extend(child)
+        return lines
+    lines.append(child[0])
+    container = getattr(child_pattern, "TextContainer", None)
+    if container is None:
+        accessor = getattr(child_pattern, "get_TextContainer", None)
+        if callable(accessor):
+            ok, container = _attempt(accessor)
+            if not ok:
+                lines.append(f"  text_container: {container}")
+                return lines
+    if container is None:
+        lines.append("  text_container: none")
+    else:
+        lines.append(f"  text_container: {_element_label(container)}")
+    return lines
+
+
+def _foreground_label():
+    import ctypes
+    import os
+
+    user32 = ctypes.windll.user32
+    hwnd = int(user32.GetForegroundWindow() or 0)
+    pid = ctypes.c_ulong()
+    if hwnd:
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    title = ctypes.create_unicode_buffer(512)
+    if hwnd:
+        user32.GetWindowTextW(hwnd, title, len(title))
+    return (
+        f"foreground: hwnd={hwnd} pid={int(pid.value)} "
+        f"self={os.getpid()} title={_clip(title.value)}"
+    )
+
+
+def _wake_result(automation):
+    import ctypes
+
+    hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    if not hwnd:
+        return "no foreground window"
+    ok, result = _attempt(lambda: automation.ElementFromHandle(hwnd))
+    if ok:
+        return "ok"
+    return result
+
+
+def describe_selection_chain(element, parent_of, *, limit=_MAX_ANCESTORS):
+    """Report each element's text pattern without hiding the failure."""
+    lines = []
+    seen = 0
+    visited = set()
+    origin = element
+    while element is not None and seen <= limit and id(element) not in visited:
+        visited.add(id(element))
+        lines.append(f"[{seen}] {_element_label(element)}")
+        lines.extend(_describe_element_selection(element))
+        seen += 1
+        try:
+            element = parent_of(element)
+        except Exception as exc:
+            lines.append(f"parent: {type(exc).__name__}: {exc}")
+            break
+    try:
+        reader = _selection_along_ancestors(origin, parent_of, limit=limit)
+    except Exception as exc:
+        reader = f"{type(exc).__name__}: {exc}"
+    lines.append(f"reader: {reader!r}")
+    return "\n".join(lines)
+
+
+def describe_focused_selection():
+    """Report the foreground selection using the same UI Automation client."""
+    lines = [f"typelib: {'loaded' if _load_uia_module() else 'unavailable'}"]
+    try:
+        automation = _automation_client()
+    except Exception as exc:
+        lines.append(f"client: {type(exc).__name__}: {exc}")
+        return "\n".join(lines)
+    lines.append(_foreground_label())
+    lines.append(f"wake: {_wake_result(automation)}")
+    try:
+        element = automation.GetFocusedElement()
+    except Exception as exc:
+        lines.append(f"focused: {type(exc).__name__}: {exc}")
+        return "\n".join(lines)
+    if element is None:
+        lines.append("focused: none")
+        lines.append("reader: ''")
+        return "\n".join(lines)
+    try:
+        walker = automation.ControlViewWalker
+        parent_of = walker.GetParentElement
+    except Exception as exc:
+        lines.append(f"walker: {type(exc).__name__}: {exc}")
+
+        def parent_of(_current):
+            return None
+    lines.append(describe_selection_chain(element, parent_of))
+    return "\n".join(lines)
 
 
 def _read_via_comtypes():
