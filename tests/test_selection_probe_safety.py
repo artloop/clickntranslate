@@ -229,6 +229,17 @@ def test_missing_text_pattern_is_reported_as_absent():
     assert "reader: ''" in report
 
 
+def test_translation_uses_notepad_edit_and_ignores_other_window_text():
+    assert windows_selection._translation_text(
+        "Notepad", "", ["Translate text from games"]) == "Translate text from games"
+    assert windows_selection._translation_text("Notepad", "", []) == ""
+    assert windows_selection._translation_text(
+        "Chrome_WidgetWin_1", "", ["github.com/jabrailkhalil/clickntranslate"]) == ""
+    assert windows_selection._translation_text("SunAwtFrame", "", []) == ""
+    assert windows_selection._translation_text(
+        "Notepad", "focused fragment", ["other"]) == "focused fragment"
+
+
 def test_windows_monitor_holds_ui_automation_listener(controller):
     controller._stop_monitor()
 

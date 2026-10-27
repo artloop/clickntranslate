@@ -516,8 +516,26 @@ def describe_captured_window(hwnd):
         lines.append(describe_selection_chain(element, lambda _current: None))
         return "\n".join(lines)
     lines.append(describe_selection_chain(element, _safe_parent(walker)))
-    found = _first_tree_selection(element, walker)
-    lines.append(f"tree_selection: {found!r}")
+    hit = _first_tree_selection(element, walker)
+    lines.append(f"tree_hit: {hit!r}")
+    try:
+        focused = automation.GetFocusedElement()
+        focused_text = "" if focused is None or _null_pointer(focused) else _selection_along_ancestors(
+            focused, _safe_parent(walker))
+    except Exception as exc:
+        focused_text = ""
+        lines.append(f"focused_reader: {type(exc).__name__}: {exc}")
+    else:
+        lines.append(f"focused_reader: {focused_text!r}")
+    edit_texts = _edit_texts_in_tree(element, walker) if class_name == "Notepad" else []
+    result = _translation_text(class_name, focused_text, edit_texts)
+    if result:
+        lines.append(f"result: {result!r}")
+    elif hit:
+        lines.append("result: no selection")
+        lines.append("ignored: text elsewhere in the window is not the selection")
+    else:
+        lines.append("result: no selection")
     return "\n".join(lines)
 
 
@@ -594,22 +612,71 @@ def _window_banner(hwnd):
     )
 
 
+def _translation_text(window_class, focused_text, edit_texts):
+    """Text that may be translated.
+
+    A bare click has no range, so every source is empty. Notepad keeps the
+    fragment in its single Edit child. Text found elsewhere in a window, such
+    as the Chrome address bar, is not the user's selection.
+    """
+    if focused_text:
+        return focused_text
+    if window_class == "Notepad" and len(edit_texts) == 1:
+        return edit_texts[0]
+    return ""
+
+
+def _edit_texts_in_tree(element, walker, *, limit=250, depth_limit=8):
+    found = []
+    state = {"seen": 0}
+
+    def visit(current, depth):
+        if current is None or _null_pointer(current) or state["seen"] >= limit or depth > depth_limit:
+            return
+        state["seen"] += 1
+        text = _edit_selection_from_element(current)
+        if text:
+            found.append(text)
+        try:
+            child = walker.GetFirstChildElement(current)
+        except Exception:
+            return
+        while child is not None and not _null_pointer(child) and state["seen"] < limit:
+            visit(child, depth + 1)
+            try:
+                child = walker.GetNextSiblingElement(child)
+            except Exception:
+                break
+
+    visit(element, 0)
+    return found
+
+
 def _read_via_comtypes():
     automation = _automation_client()
     _wake_foreground_window(automation)
     element = automation.GetFocusedElement()
-    if element is None:
+    if element is None or _null_pointer(element):
         return ""
     try:
         walker = automation.ControlViewWalker
     except Exception:
         logger.debug("UI Automation control walker unavailable", exc_info=True)
         return _selected_text_from_element(element)
+    focused_text = _selection_along_ancestors(element, _safe_parent(walker))
+    if focused_text:
+        return focused_text
+    import ctypes
 
-    def parent_of(current):
-        return walker.GetParentElement(current)
-
-    return _selection_along_ancestors(element, parent_of)
+    hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    if _window_class(hwnd) != "Notepad":
+        return ""
+    try:
+        root = automation.ElementFromHandle(hwnd)
+    except Exception:
+        logger.debug("Notepad window element is unavailable", exc_info=True)
+        return ""
+    return _translation_text("Notepad", "", _edit_texts_in_tree(root, walker))
 
 
 class _SelectionAccess:
