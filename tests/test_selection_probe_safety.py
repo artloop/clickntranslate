@@ -83,6 +83,93 @@ def test_windows_selection_reads_ancestor_when_focus_has_no_text_pattern():
     assert text == 'Highlighted sentence'
 
 
+class _TextRange:
+    def __init__(self, text):
+        self.text = text
+
+    def GetText(self, limit):
+        assert limit == -1
+        return self.text
+
+
+class _DocumentSelection:
+    """Notepad-style document: Name/Value is the whole note, GetSelection is the fragment."""
+
+    def __init__(self, selected, whole):
+        self.selected = selected
+        self.Name = whole
+        self.Value = whole
+
+    def GetCurrentPattern(self, pattern_id):
+        if pattern_id == windows_selection._TEXT_PATTERN_ID:
+            return self
+        return None
+
+    def GetSelection(self):
+        return (_TextRange(self.selected),)
+
+
+def test_text_pattern_range_is_the_fragment_not_the_whole_document():
+    document = _DocumentSelection(
+        'Translate text from games',
+        'Translate text from games, images and any app — without retyping it.',
+    )
+
+    assert windows_selection._selected_text_from_element(document) == 'Translate text from games'
+
+
+def test_single_text_range_is_read_without_an_element_array():
+    class _SingleRangeDocument(_DocumentSelection):
+        def GetSelection(self):
+            return _TextRange(self.selected)
+
+    document = _SingleRangeDocument('выделенный фрагмент', 'весь документ блокнота')
+
+    assert windows_selection._selected_text_from_element(document) == 'выделенный фрагмент'
+
+
+def test_chrome_text_run_reads_selection_from_its_text_container():
+    document = _DocumentSelection(
+        'Translate text from games',
+        'Translate text from games, images and any app — without retyping it.',
+    )
+
+    class _TextRun:
+        def GetCurrentPattern(self, pattern_id):
+            if pattern_id == windows_selection._TEXT_CHILD_PATTERN_ID:
+                return self
+            return None
+
+        @property
+        def TextContainer(self):
+            return document
+
+    assert windows_selection._selection_along_ancestors(
+        _TextRun(), lambda element: None) == 'Translate text from games'
+
+
+def test_windows_monitor_holds_ui_automation_listener(controller):
+    controller._stop_monitor()
+
+    class _Poller(QtCore.QObject):
+        activity = QtCore.pyqtSignal()
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    with (mock.patch.multiple(platform_support, IS_WINDOWS=True, IS_MAC=False, IS_LINUX=False),
+          mock.patch.object(quick, '_WindowsMouseReleasePoller', _Poller),
+          mock.patch('windows_selection.activate_selection_access') as activate,
+          mock.patch('windows_selection.deactivate_selection_access') as deactivate):
+        controller._start_monitor()
+        activate.assert_called_once()
+        controller._stop_monitor()
+        deactivate.assert_called_once()
+
+
 def test_empty_windows_selection_leaves_clipboard_and_keys_alone():
     keys = mock.Mock()
     with (mock.patch.multiple(platform_support, IS_WINDOWS=True, IS_MAC=False, IS_LINUX=False),

@@ -256,6 +256,9 @@ class SelectionQuickTranslateController(QtCore.QObject):
         elif platform_support.IS_MAC:
             monitors.append(_SelectionChangePoller(self))
         elif platform_support.IS_WINDOWS:
+            from windows_selection import activate_selection_access
+
+            activate_selection_access()
             monitors.append(_WindowsMouseReleasePoller(self))
         else:
             return
@@ -270,6 +273,10 @@ class SelectionQuickTranslateController(QtCore.QObject):
         for monitor in monitors:
             monitor.stop()
             monitor.deleteLater()
+        if platform_support.IS_WINDOWS:
+            from windows_selection import deactivate_selection_access
+
+            deactivate_selection_access()
 
     def _on_mode_changed(self):
         self._cancel_probe()
@@ -333,7 +340,7 @@ class SelectionQuickTranslateController(QtCore.QObject):
         if self._pending_text and self._pending_target != target:
             self._dismiss_selection()
         # Qt clipboard access stays on its owning thread. PRIMARY reads and
-        # Accessibility/UI Automation reads run in the bounded worker below.
+        # Accessibility/UI Automation text-range reads run in the worker below.
         primary_text = None
         if platform_support.IS_LINUX:
             clipboard = QtWidgets.QApplication.clipboard()
