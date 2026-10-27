@@ -113,37 +113,124 @@ def _text_of_selection(selection):
     return "".join(_range_text(text_range) for text_range in _iter_ranges(selection)).strip()
 
 
+def _null_pointer(value):
+    """comtypes yields a NULL pointer when a pattern or parent does not exist."""
+    if value is None:
+        return True
+    try:
+        return not bool(value)
+    except Exception:
+        return False
+
+
+def _null_pointer_error(exc):
+    if isinstance(exc, ValueError) and "NULL COM pointer" in str(exc):
+        return True
+    code = getattr(exc, "hresult", None)
+    if code is None and getattr(exc, "args", None):
+        code = exc.args[0]
+    if code in (-2147467261, 0x80004003):
+        return True
+    return "NULL COM pointer" in str(exc)
+
+
 def _pattern(element, pattern_id, interface_name):
     getter = getattr(element, "GetCurrentPattern", None)
-    if not callable(getter):
+    if not callable(getter) or _null_pointer(element):
         return None
     try:
         pattern = getter(pattern_id)
-    except Exception:
+    except Exception as exc:
+        if _null_pointer_error(exc):
+            return None
+        logger.debug("UI Automation pattern %s failed", pattern_id, exc_info=True)
         return None
-    if pattern is None:
+    if pattern is None or _null_pointer(pattern):
         return None
     query = getattr(pattern, "QueryInterface", None)
     if callable(query):
         interface = _uia_interface(interface_name)
         if interface is not None:
             try:
-                return query(interface)
-            except Exception:
+                pattern = query(interface)
+            except Exception as exc:
+                if _null_pointer_error(exc):
+                    return None
                 logger.debug("UI Automation cast to %s failed", interface_name, exc_info=True)
+    if _null_pointer(pattern):
+        return None
     return pattern
 
 
 def _selected_text_from_element(element):
-    """Highlighted fragment exposed by one element's TextPattern, if any."""
+    """Highlighted fragment from TextPattern, or from a Win32 edit control."""
     pattern = _pattern(element, _TEXT_PATTERN_ID, "IUIAutomationTextPattern")
-    if pattern is None:
+    if pattern is not None:
+        try:
+            text = _text_of_selection(pattern.GetSelection())
+        except Exception:
+            logger.debug("TextPattern selection read failed", exc_info=True)
+            text = ""
+        if text:
+            return text
+    return _edit_selection_from_element(element)
+
+
+def _is_edit_class(name):
+    folded = str(name or "").casefold()
+    return folded == "edit" or folded.startswith("richedit")
+
+
+def _native_hwnd(element):
+    for name in ("CurrentNativeWindowHandle", "NativeWindowHandle"):
+        ok, value = _attempt(lambda name=name: getattr(element, name))
+        if not ok or value is None or value == "" or callable(value):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _edit_selection_from_element(element):
+    class_name = ""
+    for name in ("CurrentClassName", "ClassName"):
+        ok, value = _attempt(lambda name=name: getattr(element, name))
+        if ok and value and not callable(value):
+            class_name = str(value)
+            break
+    if not _is_edit_class(class_name):
+        return ""
+    hwnd = _native_hwnd(element)
+    if not hwnd:
         return ""
     try:
-        return _text_of_selection(pattern.GetSelection())
+        return _selection_from_edit_control(hwnd).strip()
     except Exception:
-        logger.debug("TextPattern selection read failed", exc_info=True)
+        logger.debug("Edit control selection read failed", exc_info=True)
         return ""
+
+
+def _selection_from_edit_control(hwnd):
+    """Selected slice of a classic EDIT or RichEdit, without sending keys."""
+    import ctypes
+    from ctypes import wintypes
+
+    send = ctypes.WINFUNCTYPE(
+        ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    )(("SendMessageW", ctypes.windll.user32))
+    start = wintypes.DWORD()
+    end = wintypes.DWORD()
+    send(hwnd, 0x00B0, ctypes.addressof(start), ctypes.addressof(end))  # EM_GETSEL
+    if int(end.value) <= int(start.value):
+        return ""
+    length = int(send(hwnd, 0x000E, 0, 0) or 0)  # WM_GETTEXTLENGTH
+    if length <= 0:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    send(hwnd, 0x000D, length + 1, ctypes.addressof(buffer))  # WM_GETTEXT
+    return buffer.value[int(start.value):int(end.value)]
 
 
 def _text_container(element):
@@ -181,8 +268,12 @@ def _selection_along_ancestors(element, parent_of, *, limit=_MAX_ANCESTORS):
         seen += 1
         try:
             element = parent_of(element)
-        except Exception:
+        except Exception as exc:
+            if _null_pointer_error(exc):
+                return ""
             logger.debug("UI Automation parent walk failed", exc_info=True)
+            return ""
+        if _null_pointer(element):
             return ""
     return ""
 
@@ -289,10 +380,14 @@ def _element_label(element):
 
 
 def _describe_pattern_call(element, pattern_id, interface_name, label):
+    if _null_pointer(element):
+        return [f"  {label}: none"]
     ok, pattern = _attempt(lambda: element.GetCurrentPattern(pattern_id))
     if not ok:
+        if "NULL COM pointer" in pattern or "Неправильный указатель" in pattern:
+            return [f"  {label}: none"]
         return [f"  {label}: {pattern}"]
-    if pattern is None:
+    if pattern is None or _null_pointer(pattern):
         return [f"  {label}: none"]
     query = getattr(pattern, "QueryInterface", None)
     interface = _uia_interface(interface_name) if callable(query) else None
@@ -326,6 +421,9 @@ def _describe_element_selection(element):
                 else:
                     lines.append(f"  range[{index}]: {text}")
             lines.append(f"  parsed: {_text_of_selection(selection)!r}")
+    edit_text = _edit_selection_from_element(element)
+    if edit_text:
+        lines.append(f"  edit_selection: {_clip(edit_text)!r}")
     child = _describe_pattern_call(
         element, _TEXT_CHILD_PATTERN_ID, "IUIAutomationTextChildPattern", "text_child")
     child_pattern = child[-1] if not isinstance(child[-1], str) else None
@@ -348,36 +446,6 @@ def _describe_element_selection(element):
     return lines
 
 
-def _foreground_label():
-    import ctypes
-    import os
-
-    user32 = ctypes.windll.user32
-    hwnd = int(user32.GetForegroundWindow() or 0)
-    pid = ctypes.c_ulong()
-    if hwnd:
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    title = ctypes.create_unicode_buffer(512)
-    if hwnd:
-        user32.GetWindowTextW(hwnd, title, len(title))
-    return (
-        f"foreground: hwnd={hwnd} pid={int(pid.value)} "
-        f"self={os.getpid()} title={_clip(title.value)}"
-    )
-
-
-def _wake_result(automation):
-    import ctypes
-
-    hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
-    if not hwnd:
-        return "no foreground window"
-    ok, result = _attempt(lambda: automation.ElementFromHandle(hwnd))
-    if ok:
-        return "ok"
-    return result
-
-
 def describe_selection_chain(element, parent_of, *, limit=_MAX_ANCESTORS):
     """Report each element's text pattern without hiding the failure."""
     lines = []
@@ -392,7 +460,11 @@ def describe_selection_chain(element, parent_of, *, limit=_MAX_ANCESTORS):
         try:
             element = parent_of(element)
         except Exception as exc:
+            if _null_pointer_error(exc):
+                break
             lines.append(f"parent: {type(exc).__name__}: {exc}")
+            break
+        if _null_pointer(element):
             break
     try:
         reader = _selection_along_ancestors(origin, parent_of, limit=limit)
@@ -404,33 +476,122 @@ def describe_selection_chain(element, parent_of, *, limit=_MAX_ANCESTORS):
 
 def describe_focused_selection():
     """Report the foreground selection using the same UI Automation client."""
+    import ctypes
+
+    return describe_captured_window(int(ctypes.windll.user32.GetForegroundWindow() or 0))
+
+
+def describe_captured_window(hwnd):
+    """Report selection for the window that was in front when the mouse was released."""
     lines = [f"typelib: {'loaded' if _load_uia_module() else 'unavailable'}"]
+    hwnd = int(hwnd or 0)
+    class_name = _window_class(hwnd)
+    lines.append(f"captured: {_window_banner(hwnd)}")
+    if class_name == "SunAwtFrame":
+        lines.append(
+            "note: this is a Java window, usually PyCharm. Its editor does not publish "
+            "a text selection. Select text in Notepad or Chrome and leave that window in front."
+        )
     try:
         automation = _automation_client()
     except Exception as exc:
         lines.append(f"client: {type(exc).__name__}: {exc}")
         return "\n".join(lines)
-    lines.append(_foreground_label())
-    lines.append(f"wake: {_wake_result(automation)}")
-    try:
-        element = automation.GetFocusedElement()
-    except Exception as exc:
-        lines.append(f"focused: {type(exc).__name__}: {exc}")
+    if not hwnd:
+        lines.append("captured: no window")
         return "\n".join(lines)
-    if element is None:
-        lines.append("focused: none")
+    try:
+        element = automation.ElementFromHandle(hwnd)
+    except Exception as exc:
+        lines.append(f"window: {type(exc).__name__}: {exc}")
+        return "\n".join(lines)
+    if element is None or _null_pointer(element):
+        lines.append("window: none")
         lines.append("reader: ''")
         return "\n".join(lines)
     try:
         walker = automation.ControlViewWalker
-        parent_of = walker.GetParentElement
     except Exception as exc:
         lines.append(f"walker: {type(exc).__name__}: {exc}")
-
-        def parent_of(_current):
-            return None
-    lines.append(describe_selection_chain(element, parent_of))
+        lines.append(describe_selection_chain(element, lambda _current: None))
+        return "\n".join(lines)
+    lines.append(describe_selection_chain(element, _safe_parent(walker)))
+    found = _first_tree_selection(element, walker)
+    lines.append(f"tree_selection: {found!r}")
     return "\n".join(lines)
+
+
+def _safe_parent(walker):
+    def parent_of(element):
+        if _null_pointer(element):
+            return None
+        try:
+            parent = walker.GetParentElement(element)
+        except Exception as exc:
+            if _null_pointer_error(exc):
+                return None
+            raise
+        if _null_pointer(parent):
+            return None
+        return parent
+
+    return parent_of
+
+
+def _first_tree_selection(element, walker, *, limit=250, depth_limit=8):
+    state = {"seen": 0}
+
+    def visit(current, depth):
+        if current is None or _null_pointer(current) or state["seen"] >= limit or depth > depth_limit:
+            return ""
+        state["seen"] += 1
+        text = _selected_text_from_element(current)
+        if text:
+            return text
+        try:
+            child = walker.GetFirstChildElement(current)
+        except Exception as exc:
+            if _null_pointer_error(exc):
+                return ""
+            return ""
+        while child is not None and not _null_pointer(child) and state["seen"] < limit:
+            found = visit(child, depth + 1)
+            if found:
+                return found
+            try:
+                child = walker.GetNextSiblingElement(child)
+            except Exception:
+                break
+        return ""
+
+    return visit(element, 0)
+
+
+def _window_class(hwnd):
+    if not hwnd:
+        return ""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(hwnd, buffer, len(buffer))
+    return buffer.value
+
+
+def _window_banner(hwnd):
+    import ctypes
+    import os
+
+    if not hwnd:
+        return "hwnd=0"
+    user32 = ctypes.windll.user32
+    pid = ctypes.c_ulong()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    title = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, title, len(title))
+    return (
+        f"hwnd={hwnd} pid={int(pid.value)} self={os.getpid()} "
+        f"class={_window_class(hwnd)} title={_clip(title.value)}"
+    )
 
 
 def _read_via_comtypes():

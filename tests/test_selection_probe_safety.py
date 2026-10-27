@@ -184,6 +184,51 @@ def test_automation_client_prefers_the_loaded_coclass_clsid(monkeypatch):
     assert windows_selection._automation_clsid() == "{from-typelib}"
 
 
+def test_classic_notepad_edit_uses_the_control_selection_when_text_pattern_is_null():
+    class _Edit:
+        Name = "Текстовый редактор"
+        ControlType = 50004
+        ClassName = "Edit"
+        NativeWindowHandle = 77
+
+        def GetCurrentPattern(self, _pattern_id):
+            raise ValueError("NULL COM pointer access")
+
+    with mock.patch.object(
+            windows_selection, "_selection_from_edit_control", return_value="выделенный фрагмент") as read:
+        text = windows_selection._selected_text_from_element(_Edit())
+        report = windows_selection.describe_selection_chain(_Edit(), lambda _element: None)
+
+    assert text == "выделенный фрагмент"
+    read.assert_called_with(77)
+    assert "text_pattern: none" in report
+    assert "edit_selection: 'выделенный фрагмент'" in report
+    assert "reader: 'выделенный фрагмент'" in report
+
+
+def test_missing_text_pattern_is_reported_as_absent():
+    class _Window:
+        Name = "clickntranslate – debug_windows_selection.py"
+        ControlType = 50032
+        ClassName = "SunAwtFrame"
+
+        def GetCurrentPattern(self, _pattern_id):
+            raise ValueError("NULL COM pointer access")
+
+    def parent_of(element):
+        if element is window:
+            raise OSError(-2147467261, "Неправильный указатель")
+        return None
+
+    window = _Window()
+    report = windows_selection.describe_selection_chain(window, parent_of)
+
+    assert "text_pattern: none" in report
+    assert "text_child: none" in report
+    assert "parent:" not in report
+    assert "reader: ''" in report
+
+
 def test_windows_monitor_holds_ui_automation_listener(controller):
     controller._stop_monitor()
 

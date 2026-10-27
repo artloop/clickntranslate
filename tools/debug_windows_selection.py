@@ -29,7 +29,8 @@ def main():
     import ctypes
 
     windows_selection.activate_selection_access()
-    print("Listening. Select text in another application; each mouse release prints a report.")
+    print("Listening. Select text in Notepad or Chrome and release the mouse there.")
+    print("The report names that window. A PyCharm title means the editor was in front, not the target app.")
     print("Press Ctrl+C in this window to stop.")
     button_down = False
     try:
@@ -37,14 +38,16 @@ def main():
             pressed = bool(ctypes.windll.user32.GetAsyncKeyState(_LEFT_BUTTON) & 0x8000)
             released = button_down and not pressed
             button_down = pressed
-            if released and selection_platform.is_foreign_foreground():
-                time.sleep(0.45)
-                print()
-                try:
-                    print(windows_selection.describe_focused_selection(), flush=True)
-                except Exception:
-                    traceback.print_exc()
-                print("-" * 60, flush=True)
+            if released:
+                hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+                if hwnd and selection_platform.is_foreign_foreground():
+                    time.sleep(0.45)
+                    print()
+                    try:
+                        print(windows_selection.describe_captured_window(hwnd), flush=True)
+                    except Exception:
+                        traceback.print_exc()
+                    print("-" * 60, flush=True)
             time.sleep(0.05)
     except KeyboardInterrupt:
         print("\nStopped.")
